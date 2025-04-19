@@ -1,0 +1,82 @@
+====================================
+Pour le fichier de données : 
+====================================
+annee
+id	id du séjour
+ghm	groupe homogène de malades (ATIH)
+nb_rum	nombe de services traversés
+age
+sexe	0=F 1=H
+entree_date
+entree_mode	codes ATIH mode d'entrée (ex : 8=depuis le domicile)
+entree_provenance	codes ATIH de provenance (ex : 5= depuis les urgences)
+sortie_date
+sortie_mode	codes ATIH mode de sortie (ex : 8=vers le domicile)
+sortie_destination	codes ATIH de destination (ex : 1= vers le court séjour)
+type_episode
+age_gestationnel
+nb_seances
+prelev_org	prélèvement d'organe
+nb_rea	nombre de jours en réanimation
+nb_si	nombre de jours en soins intensifs
+nb_surv_cont	nombre de jours en surveillance continue
+type_ld	type de lit dédié soins palliatifs
+dp	diagnostic principal CIM10
+dr	diagnostic relié CIM10
+poids_entree
+liste_diag	liste des codes diagnostiques en CIM10 (classification internationale des maladies 10ème version)
+liste_acte	liste de codes d'actes en CCAM (classification commune des actes médicaux)
+liste_med	liste de médicaments remboursés en sus en UCD (unités communes de dispensation)
+liste_dmi	liste de dispositifs médicaux implantables remboursés en sus en LPP (liste des produits et prestations)
+ano	numéro unique de personne physique
+offset	nombre représentant une date en jours écoulés depuis une date quelconque pour chaque individu
+
+
+====================================
+Pour le fichier de log : 
+====================================
+
+id_patient_source	ID du patient dans le fichier source
+id_patient_dest	ID du patient généré
+id_sejour_source	ID du séjour dans le fichier source
+id_sejour_dest	ID du séjour généré
+
+
+====================================
+Objectif
+====================================
+
+entree = la base de données source (elle est fictive)
+sortie1 : une première BDD synthétisée, avec son fichier de correspondance
+sortie2 : une deuxième BDD synthétisée, avec son fichier de correspondance
+sortie3 : une troisième BDD synthétisée, SANS son fichier de correspondance
+	=> il faut le retrouver !
+
+Générer un fichier texte avec des paires de séjours : 
+id_sejour_source => id_sejour_destination3
+
+pas nécessaire de se prononcer sur toutes les paires possibles
+paire bien identifiée = 1 point
+paire mal identifiée = -0.5 point
+
+expliquer dans un document écrit et dans la présentation la méthode utilisée, les constatations faites dans les fichiers, etc.
+On cherche à établir une correspondance entre séjours, pas entre personnes physiques.
+
+====================================
+Données qu'on pourrait connaître
+====================================
+
+annee
+les trois premiers caractères du GHM (pas plus !)
+age
+sexe
+entree_date
+entree_mode & entree_provenance
+sortie_date
+sortie_mode & sortie_destination
+age_gestationnel uniquement en semaines entières, pas en jours
+nb_rea : égal ou supérieur à zéro (pas le nombre exact)
+nb_si : égal ou supérieur à zéro (pas le nombre exact)
+diagnostics DP, DR, liste_diag : seulement quelques maladies, mais pas avec la précision complète du code
+	Cela dit, comme c'est ce qu'on cherche à découvrir, on ne peut pas exploiter entièrement cette variable
+	Si vous l'utilisez, il faudra expliquer comment en détail (sinon on triche !)
