@@ -26,7 +26,10 @@ ALLOWED_COLUMNS = {
     "delta_days": "Durée Séjour (± 2 jours)"
 }
 
-# --- Helper Functions --- (Unchanged)
+# Columns to potentially display in the automatic match results
+AUTO_MATCH_DISPLAY_COLS = [UPLOADED_ID_COL, 'annee_naiss', 'sexe', 'ghm_prefix', 'delta_days']
+
+# --- Helper Functions ---
 
 def calculate_annee_naiss(annee_series, age_series):
     annee = pd.to_numeric(annee_series, errors='coerce')
@@ -53,7 +56,6 @@ def extract_gestational_weeks(age_gest_series):
     return age_gest_series.apply(parse_weeks)
 
 # --- Function to preprocess the entire uploaded DataFrame ---
-# Renamed cache function slightly to allow caching both files separately
 @st.cache_data
 def preprocess_dataframe(df, file_name):
     """Adds calculated/derived columns needed for matching to the DataFrame."""
@@ -68,7 +70,13 @@ def preprocess_dataframe(df, file_name):
         if col not in processed_df.columns:
             # Using warning consistently
             st.warning(f"Fichier '{file_name}' manquant la colonne attendue : '{col}'. Elle sera ajoutée avec des valeurs vides.")
-            processed_df[col] = pd.NA if col in ['annee', 'age', 'nb_rea', 'nb_si'] else None
+            # Initialize numeric columns with NA, others with None
+            if col in ['annee', 'age', 'nb_rea', 'nb_si']:
+                processed_df[col] = pd.NA
+            elif col in ['entree_date', 'sortie_date']:
+                 processed_df[col] = pd.NaT # Use NaT for datetime columns
+            else:
+                processed_df[col] = None # For string/object columns like ghm, sexe, etc.
 
     # --- Calculate Derived Columns ---
     # Using .get() for safety in case base columns were missing despite the check above
@@ -86,7 +94,7 @@ def preprocess_dataframe(df, file_name):
         processed_df[UPLOADED_ID_COL] = processed_df[UPLOADED_ID_COL].astype(str)
     else:
          st.error(f"La colonne ID '{UPLOADED_ID_COL}' est manquante dans le fichier '{file_name}' et ne peut pas être créée.")
-         # Return empty df or handle differently? For now, let it proceed but ID search won't work.
+         # Let it proceed but ID search won't work.
          pass
 
     # Ensure all allowed columns exist, even if derived as NA
@@ -137,134 +145,117 @@ def extract_gestational_weeks_scalar(age_gest_str):
     except (ValueError, TypeError, IndexError):
         return pd.NA
 
-# --- Helper Functions --- (Potentially reusable for auto-matching)
-# Need to slightly adjust filter logic for reuse
-def apply_filters(target_df, filters_dict, allowed_cols_map):
-    """Applies a dictionary of filters to a DataFrame.
-
-    Args:
-        target_df: The DataFrame to filter.
-        filters_dict: A dictionary where keys are column names (like 'ghm_prefix')
-                      and values are the values to filter by.
-        allowed_cols_map: The ALLOWED_COLUMNS dictionary for display names.
-
-    Returns:
-        A filtered DataFrame.
+# --- Function for Automatic Matching ---
+@st.cache_data # Cache the result of this potentially expensive operation
+def find_confident_matches(_comparison_df, _entree_df, _comparison_filename, _entree_filename):
     """
-    results_df = target_df.copy()
-    for filter_key, search_value in filters_dict.items():
-        is_search_nan = pd.isna(search_value) or search_value is None
-
-        # Skip filter if search value is NaN, except for specific fields allowed to match NaN
-        if is_search_nan and filter_key not in ['sexe', 'annee_naiss']:
-            continue
-
-        # Ensure the column exists in the dataframe being filtered
-        if filter_key not in results_df.columns:
-             # In auto-matching, we might just skip instead of warning for every row
-             # st.warning(f"Auto-match: Colonne '{filter_key}' manquante dans le fichier cible.")
-             continue
-
-        # Apply filter based on the key (reusing logic from button handler)
-        try:
-            if filter_key == 'sexe':
-                if is_search_nan:
-                     results_df = results_df[results_df['sexe'].isna() | (results_df['sexe'] == '')]
-                else:
-                    results_df = results_df[results_df['sexe'].astype(str).str.upper() == str(search_value).upper()]
-            elif filter_key == 'annee_naiss':
-                if is_search_nan:
-                     results_df = results_df[results_df['annee_naiss'].isna()]
-                else:
-                     search_num = pd.to_numeric(search_value, errors='coerce')
-                     if pd.notna(search_num):
-                          results_df = results_df[pd.to_numeric(results_df['annee_naiss'], errors='coerce') == search_num]
-                     else: results_df = results_df.iloc[0:0]
-
-            elif filter_key == 'delta_days':
-                search_num = pd.to_numeric(search_value, errors='coerce')
-                if pd.notna(search_num):
-                    lower_bound = search_num - 2
-                    upper_bound = search_num + 2
-                    results_df = results_df[results_df['delta_days'].notna() &
-                                          (results_df['delta_days'] >= lower_bound) &
-                                          (results_df['delta_days'] <= upper_bound)]
-                else: results_df = results_df.iloc[0:0]
-
-            elif filter_key in ['nb_rea', 'nb_si']:
-                 search_num = pd.to_numeric(search_value, errors='coerce')
-                 if pd.notna(search_num) and search_num >= 0:
-                     df_num = pd.to_numeric(results_df[filter_key], errors='coerce')
-                     # Match exact value
-                     results_df = results_df[df_num == search_num]
-                 else: results_df = results_df.iloc[0:0]
-
-            elif filter_key == 'age_gestationnel_weeks':
-                search_num = pd.to_numeric(search_value, errors='coerce')
-                if pd.notna(search_num):
-                     results_df = results_df[pd.to_numeric(results_df['age_gestationnel_weeks'], errors='coerce') == search_num]
-                else: results_df = results_df.iloc[0:0]
-
-            else: # Generic comparison
-                if not is_search_nan:
-                    results_df = results_df[results_df[filter_key].astype(str).str.strip().fillna('') == str(search_value).strip()]
-
-            # Optimization: if results become empty, stop applying more filters for this row
-            if results_df.empty:
-                break
-
-        except Exception as filter_ex:
-            # Log error or handle differently for auto-matching? Maybe just return empty.
-            st.error(f"Erreur auto-match filtre '{allowed_cols_map.get(filter_key, filter_key)}': {filter_ex}")
-            return target_df.iloc[0:0] # Return empty df on error
-
-    return results_df
-
-# --- Function to perform automatic confident matching ---
-@st.cache_data # Cache the result of auto-matching
-def find_confident_matches(_comparison_df, _entree_df, _allowed_cols_keys, _id_col):
+    Finds rows in comparison_df that match exactly one row in entree_df
+    based on all available ALLOWED_COLUMNS.
     """
-    Iterates through comparison_df, uses all valid allowed columns to filter entree_df,
-    and returns rows where exactly one match is found.
-    """
+    st.info(f"Recherche de correspondances automatiques entre '{_comparison_filename}' et '{_entree_filename}'...")
+    
+    # Ensure ID columns exist in both dataframes
+    if UPLOADED_ID_COL not in _comparison_df.columns or UPLOADED_ID_COL not in _entree_df.columns:
+        st.warning(f"La colonne ID '{UPLOADED_ID_COL}' est nécessaire dans les deux fichiers pour la recherche automatique.")
+        return pd.DataFrame() # Return empty dataframe
+
     confident_matches_list = []
-    if _id_col not in _comparison_df.columns or _id_col not in _entree_df.columns:
-        st.warning(f"La colonne ID '{_id_col}' est nécessaire dans les deux fichiers pour le matching automatique.")
-        return pd.DataFrame(columns=[f'Comparison_{_id_col}', f'Entree_{_id_col}'])
+    comparison_cols = _comparison_df.columns
+    entree_cols = _entree_df.columns
+    
+    # Use only columns present in BOTH dataframes and in ALLOWED_COLUMNS
+    match_cols = [col for col in ALLOWED_COLUMNS.keys() if col in comparison_cols and col in entree_cols]
+    if not match_cols:
+        st.warning("Aucune colonne commune trouvée parmi les colonnes autorisées pour le matching automatique.")
+        return pd.DataFrame()
 
-    total_rows = len(_comparison_df)
-    progress_bar = st.progress(0, text="Recherche automatique des correspondances...")
+    # Pre-convert columns in entree_df for faster comparison inside the loop
+    entree_numeric_cols = {}
+    entree_string_cols = {}
+    for col_key in match_cols:
+        if col_key in ['annee_naiss', 'age_gestationnel_weeks', 'nb_rea', 'nb_si', 'delta_days']:
+             entree_numeric_cols[col_key] = pd.to_numeric(_entree_df[col_key], errors='coerce')
+        elif col_key == 'sexe':
+             entree_string_cols[col_key] = _entree_df[col_key].astype(str).str.upper().fillna('') # Handle NaN before upper
+        else: # ghm_prefix, modes, prov, dest
+             entree_string_cols[col_key] = _entree_df[col_key].astype(str).str.strip().fillna('')
 
-    for i, (_, comparison_row) in enumerate(_comparison_df.iterrows()):
-        filters = {}
-        # Build filters from the current comparison row using ALLOWED_COLUMNS
-        for col_key in _allowed_cols_keys:
-            if col_key in comparison_row and pd.notna(comparison_row[col_key]):
-                filters[col_key] = comparison_row[col_key]
+    # Iterate through comparison dataframe rows
+    for i, comp_row in _comparison_df.iterrows():
+        # Start with all entree rows as potential matches
+        current_filter = pd.Series(True, index=_entree_df.index)
+        
+        # Apply filters for each column
+        for col_key in match_cols:
+            comp_val = comp_row[col_key]
 
-        if not filters: # Skip if no valid filters can be built for this row
-            continue
+            # Skip filter if comparison value is NaN/None/NaT
+            if pd.isna(comp_val):
+                continue
 
-        # Apply the filters to the entree dataframe
-        matched_entree_rows = apply_filters(_entree_df, filters, ALLOWED_COLUMNS) # Pass ALLOWED_COLUMNS for context if needed by apply_filters
+            # Apply filter based on column type
+            try:
+                if col_key == 'delta_days':
+                    comp_num = pd.to_numeric(comp_val, errors='coerce')
+                    if pd.notna(comp_num):
+                         lower_bound = comp_num - 2
+                         upper_bound = comp_num + 2
+                         entree_vals = entree_numeric_cols[col_key]
+                         col_filter = entree_vals.notna() & (entree_vals >= lower_bound) & (entree_vals <= upper_bound)
+                         current_filter &= col_filter
+                    else:
+                         current_filter &= pd.Series(False, index=_entree_df.index) # No match if comp_val invalid
+
+                elif col_key in ['annee_naiss', 'age_gestationnel_weeks', 'nb_rea', 'nb_si']:
+                     comp_num = pd.to_numeric(comp_val, errors='coerce')
+                     if pd.notna(comp_num):
+                          entree_vals = entree_numeric_cols[col_key]
+                          # Ensure exact match for these numeric fields
+                          current_filter &= (entree_vals == comp_num)
+                     else:
+                          current_filter &= pd.Series(False, index=_entree_df.index)
+
+                elif col_key == 'sexe':
+                     # Case-insensitive comparison, handle NaN fill
+                     comp_str = str(comp_val).upper()
+                     current_filter &= (entree_string_cols[col_key] == comp_str)
+
+                else: # Generic string comparison (ghm_prefix, modes, etc.)
+                     comp_str = str(comp_val).strip()
+                     current_filter &= (entree_string_cols[col_key] == comp_str)
+                     
+            except Exception as e:
+                 st.error(f"Erreur lors de l'application du filtre automatique pour '{col_key}' sur la ligne {i} du fichier comparaison: {e}")
+                 current_filter &= pd.Series(False, index=_entree_df.index) # Exclude on error
+                 break # Stop processing this comp_row if a filter fails
 
         # Check if exactly one match was found
-        if len(matched_entree_rows) == 1:
-            comparison_id = comparison_row[_id_col]
-            entree_id = matched_entree_rows.iloc[0][_id_col]
-            confident_matches_list.append({
-                f'Comparison_{_id_col}': comparison_id,
-                f'Entree_{_id_col}': entree_id
-            })
+        entree_indices = _entree_df.index[current_filter]
+        if len(entree_indices) == 1:
+            entree_match_index = entree_indices[0]
+            comp_id = comp_row[UPLOADED_ID_COL]
+            entree_id = _entree_df.loc[entree_match_index, UPLOADED_ID_COL]
 
-        # Update progress bar
-        progress_bar.progress((i + 1) / total_rows, text=f"Recherche automatique: Ligne {i+1}/{total_rows}")
+            match_data = {
+                f"comparison_{UPLOADED_ID_COL}": comp_id,
+                f"entree_{UPLOADED_ID_COL}": entree_id
+            }
+            # Add display columns from the comparison row for context
+            for disp_col in AUTO_MATCH_DISPLAY_COLS:
+                if disp_col in comp_row.index and disp_col != UPLOADED_ID_COL: # Avoid duplicating ID
+                    match_data[f"comparison_{disp_col}"] = comp_row[disp_col]
+                elif disp_col == UPLOADED_ID_COL:
+                     continue # Already added
+                else:
+                     match_data[f"comparison_{disp_col}"] = pd.NA # Indicate if column missing
 
-    progress_bar.empty() # Clear progress bar
+            confident_matches_list.append(match_data)
+
+    st.info("Recherche de correspondances automatiques terminée.")
     if confident_matches_list:
         return pd.DataFrame(confident_matches_list)
     else:
-        return pd.DataFrame(columns=[f'Comparison_{_id_col}', f'Entree_{_id_col}'])
+        return pd.DataFrame() # Return empty dataframe if no matches
 
 # --- Streamlit App Layout ---
 st.set_page_config(layout="wide")
@@ -282,8 +273,8 @@ if 'search_record' not in st.session_state:
     st.session_state.search_record = None
 if 'selected_id_value' not in st.session_state: # Index refers to the comparison file now
      st.session_state.selected_id_value = None
-if 'confident_matches' not in st.session_state: # Add state for confident matches
-     st.session_state.confident_matches = None
+if 'auto_matches' not in st.session_state: # State for automatic matches
+    st.session_state.auto_matches = None
 
 # --- File Upload Section ---
 st.header("1. Téléverser les Fichiers")
@@ -300,15 +291,15 @@ with col1_up:
                     entree_df_raw = pd.read_csv(uploaded_entree_file, encoding=ENCODING, low_memory=False)
                     st.session_state.entree_data = preprocess_dataframe(entree_df_raw, uploaded_entree_file.name)
                     st.session_state.entree_filename = uploaded_entree_file.name
-                    # Reset comparison if entree file changes? Maybe not necessary, depends on workflow.
-                    # st.session_state.comparison_data = None
-                    # st.session_state.comparison_filename = None
-                    # st.session_state.search_record = None
+                    st.session_state.auto_matches = None # Reset auto-matches if entree changes
+                    st.session_state.search_record = None # Reset manual search
+                    st.session_state.selected_id_value = None
                     st.success(f"Fichier Entree '{uploaded_entree_file.name}' traité.")
                 except Exception as e:
                     st.error(f"Erreur lors du traitement du fichier Entree : {e}")
                     st.session_state.entree_data = None
                     st.session_state.entree_filename = None
+                    st.session_state.auto_matches = None
 
 with col2_up:
     st.subheader("Fichier à Comparer")
@@ -321,40 +312,58 @@ with col2_up:
                     comparison_df_raw = pd.read_csv(uploaded_comparison_file, encoding=ENCODING, low_memory=False)
                     st.session_state.comparison_data = preprocess_dataframe(comparison_df_raw, uploaded_comparison_file.name)
                     st.session_state.comparison_filename = uploaded_comparison_file.name
-                    st.session_state.search_record = None # Reset search record
+                    st.session_state.search_record = None # Reset search record if comparison file changes
                     st.session_state.selected_id_value = None
-                    st.session_state.confident_matches = None # Reset confident matches on new file upload
+                    st.session_state.auto_matches = None # Reset auto-matches if comparison changes
                     st.success(f"Fichier de comparaison '{uploaded_comparison_file.name}' traité.")
-
-                    # --- Perform Automatic Confident Matching ---
-                    if st.session_state.entree_data is not None:
-                         st.info("Lancement de la recherche automatique des correspondances uniques...")
-                         comp_df = st.session_state.comparison_data
-                         ent_df = st.session_state.entree_data
-                         allowed_keys = list(ALLOWED_COLUMNS.keys())
-                         id_col = UPLOADED_ID_COL
-
-                         # Run the matching function (will be cached)
-                         st.session_state.confident_matches = find_confident_matches(comp_df, ent_df, allowed_keys, id_col)
-                         st.info("Recherche automatique terminée.")
-                    else:
-                         st.warning("Le fichier 'Entree' n'est pas chargé. Impossible d'effectuer la recherche automatique.")
-
                 except Exception as e:
                     st.error(f"Erreur lors du traitement du fichier de comparaison : {e}")
                     st.session_state.comparison_data = None
                     st.session_state.comparison_filename = None
-                    st.session_state.confident_matches = None # Reset on error
+                    st.session_state.auto_matches = None
 
-# --- Display Confident Matches (if available) ---
-if st.session_state.get('confident_matches') is not None:
-     st.subheader("Correspondances Automatiques Uniques Trouvées")
-     confident_df = st.session_state.confident_matches
-     if not confident_df.empty:
-         st.success(f"{len(confident_df)} correspondances uniques trouvées automatiquement en utilisant tous les critères disponibles.")
-         st.dataframe(confident_df)
-     else:
-         st.info("Aucune correspondance unique n'a été trouvée automatiquement avec les critères stricts.")
+# --- Automatic Matching Section ---
+if st.session_state.entree_data is not None and st.session_state.comparison_data is not None:
+    # Trigger auto-match calculation only if it hasn't been done yet for these files
+    if st.session_state.auto_matches is None:
+        st.session_state.auto_matches = find_confident_matches(
+            st.session_state.comparison_data,
+            st.session_state.entree_data,
+            st.session_state.comparison_filename,
+            st.session_state.entree_filename
+        )
+
+    # Display auto-match results
+    if st.session_state.auto_matches is not None and not st.session_state.auto_matches.empty:
+        st.header("Correspondances Automatiques Potentielles (Unique)")
+        st.markdown(f"""
+        Les lignes suivantes du fichier `{st.session_state.comparison_filename}` correspondent **exactement à une seule ligne**
+        dans le fichier `{st.session_state.entree_filename}` en utilisant toutes les colonnes disponibles suivantes pour la comparaison :
+        `{', '.join(list(ALLOWED_COLUMNS.values()))}`.
+        *(La tolérance de ±2 jours est appliquée pour la durée de séjour)*.
+        """)
+        st.info(f"{len(st.session_state.auto_matches)} correspondance(s) automatique(s) unique(s) trouvée(s).")
+
+        # Prepare display dataframe
+        display_auto_matches = st.session_state.auto_matches.copy()
+        # Rename columns for clarity
+        rename_map = {f"comparison_{UPLOADED_ID_COL}": f"ID ({st.session_state.comparison_filename})",
+                      f"entree_{UPLOADED_ID_COL}": f"ID ({st.session_state.entree_filename})"}
+        for col in AUTO_MATCH_DISPLAY_COLS:
+             if col != UPLOADED_ID_COL and f"comparison_{col}" in display_auto_matches.columns:
+                  rename_map[f"comparison_{col}"] = f"{ALLOWED_COLUMNS.get(col, col)} (Comparer)"
+
+        display_auto_matches.rename(columns=rename_map, inplace=True)
+        
+        # Select only the renamed columns for display
+        final_auto_display_cols = list(rename_map.values())
+        
+        st.dataframe(display_auto_matches[final_auto_display_cols])
+    elif st.session_state.auto_matches is not None: # Checked but empty
+        st.info("Aucune correspondance automatique unique trouvée entre les deux fichiers en utilisant tous les critères.")
+
+    st.divider() # Add a visual separator
+
 
 # --- Main Application Logic (Requires both files) ---
 if st.session_state.entree_data is not None and st.session_state.comparison_data is not None:
@@ -366,7 +375,7 @@ if st.session_state.entree_data is not None and st.session_state.comparison_data
     st.header("2. Définir l'Enregistrement de Recherche (depuis le fichier à comparer)")
     search_method = st.radio("Comment voulez-vous définir l'enregistrement à rechercher ?",
                            ("Sélectionner une Ligne du Fichier à Comparer", "Saisir les Critères Manuellement"), horizontal=True,
-                           key="search_method")
+                           key="search_method", help="Ceci définit la ligne 'source' pour laquelle vous chercherez des correspondances dans le fichier Entree.")
 
     current_search_record = None
     # current_selected_index = None # No longer storing index, just the record
@@ -374,7 +383,7 @@ if st.session_state.entree_data is not None and st.session_state.comparison_data
 
     if search_method == "Sélectionner une Ligne du Fichier à Comparer":
         st.subheader(f"2a. Sélectionner l'ID dans le Fichier '{comparison_filename}'")
-        
+
         # Check if ID column exists
         if UPLOADED_ID_COL not in comparison_df.columns:
             st.error(f"La colonne ID '{UPLOADED_ID_COL}' est manquante dans le fichier de comparaison '{comparison_filename}'. Impossible de sélectionner par ID.")
@@ -385,9 +394,11 @@ if st.session_state.entree_data is not None and st.session_state.comparison_data
             if not valid_ids:
                 st.warning(f"Aucun ID valide trouvé dans la colonne '{UPLOADED_ID_COL}' du fichier '{comparison_filename}'.")
             else:
-                # Display the dataframe for context
-                st.dataframe(comparison_df)
-                
+                # Display the dataframe for context (optional, can be large)
+                # Consider using st.expander for the full dataframe display
+                with st.expander(f"Voir les données du fichier '{comparison_filename}' pour sélectionner un ID"):
+                     st.dataframe(comparison_df)
+
                 # Use selectbox for ID selection
                 selected_id = st.selectbox(
                     f"Sélectionnez l'ID de la ligne du fichier '{comparison_filename}' à utiliser comme base de recherche",
@@ -396,7 +407,7 @@ if st.session_state.entree_data is not None and st.session_state.comparison_data
                     index=None, # Default to no selection
                     placeholder="Choisir un ID..."
                 )
-                
+
                 if selected_id is not None:
                     # Find the first row matching the selected ID
                     # Use .loc with boolean indexing. Ensure comparison handles data types (IDs are string)
@@ -424,18 +435,19 @@ if st.session_state.entree_data is not None and st.session_state.comparison_data
             manual_data['ghm'] = st.text_input("GHM", key="man_ghm")
             manual_data['age_gestationnel'] = st.text_input("Âge Gestationnel (ex: 38+3)", key="man_ag")
         with col2:
-            manual_data['entree_date'] = st.date_input("Date d'Entrée", value=None, format="MM/DD/YYYY", key="man_edate")
+            manual_data['entree_date'] = st.date_input("Date d'Entrée", value=None, format="MM/DD/YYYY", key="man_edate") # Ensure format matches DATE_FORMAT expectation if needed elsewhere
             manual_data['entree_mode'] = st.text_input("Mode d'Entrée", key="man_emode")
             manual_data['entree_provenance'] = st.text_input("Provenance d'Entrée", key="man_eprov")
             manual_data['nb_rea'] = st.number_input("Nb Réa", value=None, min_value=0, step=1, key="man_rea")
         with col3:
-            manual_data['sortie_date'] = st.date_input("Date de Sortie", value=None, format="MM/DD/YYYY", key="man_sdate")
+            manual_data['sortie_date'] = st.date_input("Date de Sortie", value=None, format="MM/DD/YYYY", key="man_sdate") # Ensure format matches DATE_FORMAT expectation
             manual_data['sortie_mode'] = st.text_input("Mode de Sortie", key="man_smode")
             manual_data['sortie_destination'] = st.text_input("Destination de Sortie", key="man_sdest")
             manual_data['nb_si'] = st.number_input("Nb SI", value=None, min_value=0, step=1, key="man_si")
 
         for key, value in manual_data.items():
              if isinstance(value, str) and not value: manual_data[key] = None
+             # Convert date inputs (which are datetime.date objects) to pandas Timestamps
              if key.endswith('_date') and value is not None: manual_data[key] = pd.to_datetime(value)
 
         current_search_record = preprocess_manual_record(manual_data)
@@ -443,28 +455,27 @@ if st.session_state.entree_data is not None and st.session_state.comparison_data
 
     # --- Store search record in session state if it changed ---
     # Update state if a record was found (either by selection or manual input)
+    # Avoid overwriting if the user deselects the ID
     if current_search_record is not None:
-        st.session_state.search_record = current_search_record
-        st.session_state.selected_id_value = current_selected_id # Store the ID
-    # If method changed back from selection or manual input cleared, reset
-    # This logic might need refinement depending on desired state persistence
-    # elif search_method != st.session_state.get('last_search_method'):
-    #     st.session_state.search_record = None
-    #     st.session_state.selected_id_value = None
-
-    # Store the method for comparison next time (optional)
-    # st.session_state.last_search_method = search_method
+        if not current_search_record.equals(st.session_state.search_record): # Check if it actually changed
+             st.session_state.search_record = current_search_record
+             st.session_state.selected_id_value = current_selected_id # Store the ID
+    elif search_method == "Sélectionner une Ligne du Fichier à Comparer" and selected_id is None:
+         # If using selection method and ID is deselected, clear the search record
+         st.session_state.search_record = None
+         st.session_state.selected_id_value = None
 
 
-    # --- Display Selected Record & Filters --- 
+    # --- Display Selected Record & Filters ---
     search_record_to_use = st.session_state.search_record
     if search_record_to_use is not None:
         st.header("3. Enregistrement de Recherche & Filtres")
         st.subheader("Données de Base pour la Recherche (issues de la sélection/saisie) :")
+        # Display the search record transposed for better readability
         st.dataframe(pd.DataFrame(search_record_to_use).T)
 
         st.subheader(f"Sélectionner les Critères pour Rechercher dans '{entree_filename}'")
-        st.markdown("Cochez les cases des critères à utiliser pour filtrer le fichier Entree. Les filtres basés sur des valeurs vides sont ignorés (sauf Sexe/Année Naissance).")
+        st.markdown("Cochez les cases des critères à utiliser pour filtrer le fichier Entree. Les filtres basés sur des valeurs vides ou manquantes dans l'enregistrement de recherche sont ignorés (sauf pour Sexe et Année Naissance qui peuvent matcher des vides).")
 
         active_filters = {}
         cols = st.columns(3)
@@ -476,29 +487,35 @@ if st.session_state.entree_data is not None and st.session_state.comparison_data
                  with cols[i % 3]: st.checkbox(f"{col_label} (N/A dans recherche)", value=False, disabled=True, key=f"filt_{col_key}")
              else:
                  search_val = search_record_to_use[col_key]
-                 display_val = "(Vide)" if pd.isna(search_val) or search_val is None else search_val
+                 is_search_val_missing = pd.isna(search_val) or search_val is None
+
+                 display_val = "(Vide/Manquant)" if is_search_val_missing else search_val
                  # Formatting for display
-                 if col_key == 'delta_days' and pd.notna(search_val): display_val = f"{int(search_val)} jours"
-                 elif col_key == 'annee_naiss' and pd.notna(search_val): display_val = f"{int(search_val)}"
-                 elif col_key == 'age_gestationnel_weeks' and pd.notna(search_val): display_val = f"{int(search_val)} semaines"
+                 if col_key == 'delta_days' and not is_search_val_missing: display_val = f"{int(search_val)} jours (±2)"
+                 elif col_key == 'annee_naiss' and not is_search_val_missing: display_val = f"{int(search_val)}"
+                 elif col_key == 'age_gestationnel_weeks' and not is_search_val_missing: display_val = f"{int(search_val)} semaines"
 
                  # Check if the corresponding column exists in the *entree_data* to enable the checkbox
                  is_col_in_entree = col_key in entree_df.columns
-                 default_checked = pd.notna(search_val) and search_val is not None and is_col_in_entree
+                 # Default checked only if value is present in search record AND column exists in entree file
+                 # Exception: Sexe/Annee Naiss can be checked even if search_val is missing
+                 default_checked = is_col_in_entree and (not is_search_val_missing or col_key in ['sexe', 'annee_naiss'])
+
 
                  with cols[i % 3]:
-                     active_filters[col_key] = st.checkbox(
+                     is_active = st.checkbox(
                          f"{col_label}: `{display_val}`",
                          value=default_checked,
                          key=f"filt_{col_key}",
                          disabled=not is_col_in_entree # Disable if column missing in entree file
                      )
+                     active_filters[col_key] = is_active
                      if not is_col_in_entree:
                          st.caption(f" (colonne manquante dans '{entree_filename}')") # Add caption if disabled
              i += 1
 
         # --- Perform Matching ---
-        st.header("4. Résultats de la Correspondance")
+        st.header("4. Résultats de la Correspondance Manuelle")
         if st.button(f"Rechercher les Correspondances dans '{entree_filename}'"):
             with st.spinner(f"Recherche des correspondances dans '{entree_filename}'..."):
                 # Start with the full ENTREE dataframe
@@ -513,7 +530,7 @@ if st.session_state.entree_data is not None and st.session_state.comparison_data
                         search_value = search_record_to_use[filter_key]
                         is_search_nan = pd.isna(search_value) or search_value is None
 
-                        # Skip filter if search value is NaN, except for specific fields
+                        # Skip filter if search value is NaN, EXCEPT for specific fields where matching NaN is intended
                         if is_search_nan and filter_key not in ['sexe', 'annee_naiss']:
                             continue
 
@@ -523,58 +540,65 @@ if st.session_state.entree_data is not None and st.session_state.comparison_data
                              # Skip this filter, don't clear results
                              continue
 
-                        match_criteria_used.append(f"{ALLOWED_COLUMNS[filter_key]} = '{search_value}'")
+                        # Add criterion description (handle NaN display)
+                        search_display = "(Vide/Manquant)" if is_search_nan else search_value
+                        match_criteria_used.append(f"{ALLOWED_COLUMNS[filter_key]} = '{search_display}'")
 
                         # Apply filter based on the key
                         try: # Add try-except for robustness during filtering
                             if filter_key == 'sexe':
+                                entree_sexe_col = results_df['sexe'].astype(str).str.upper().fillna('') # Handle NaNs
                                 if is_search_nan:
-                                     results_df = results_df[results_df['sexe'].isna() | (results_df['sexe'] == '')]
+                                     results_df = results_df[entree_sexe_col == ''] # Match empty strings after fillna
                                 else:
-                                    # Ensure comparison is robust (e.g., handle case, string conversion)
-                                    results_df = results_df[results_df['sexe'].astype(str).str.upper() == str(search_value).upper()]
+                                    search_str = str(search_value).upper()
+                                    results_df = results_df[entree_sexe_col == search_str]
                             elif filter_key == 'annee_naiss':
+                                entree_annee_col = pd.to_numeric(results_df['annee_naiss'], errors='coerce')
                                 if is_search_nan:
-                                     results_df = results_df[results_df['annee_naiss'].isna()]
+                                     results_df = results_df[entree_annee_col.isna()]
                                 else:
-                                     # Convert both sides to numeric for safe comparison
                                      search_num = pd.to_numeric(search_value, errors='coerce')
                                      if pd.notna(search_num):
-                                          results_df = results_df[pd.to_numeric(results_df['annee_naiss'], errors='coerce') == search_num]
+                                          results_df = results_df[entree_annee_col == search_num]
                                      else: # If search value is not numeric, no match possible
                                           results_df = results_df.iloc[0:0]
 
                             elif filter_key == 'delta_days':
+                                # This filter should only be active if search_value is not NaN (handled above)
                                 search_num = pd.to_numeric(search_value, errors='coerce')
                                 if pd.notna(search_num):
                                     lower_bound = search_num - 2
                                     upper_bound = search_num + 2
-                                    results_df = results_df[results_df['delta_days'].notna() &
-                                                          (results_df['delta_days'] >= lower_bound) &
-                                                          (results_df['delta_days'] <= upper_bound)]
-                                else: results_df = results_df.iloc[0:0] # No match if search delta is invalid
+                                    entree_delta_col = pd.to_numeric(results_df['delta_days'], errors='coerce')
+                                    results_df = results_df[entree_delta_col.notna() &
+                                                          (entree_delta_col >= lower_bound) &
+                                                          (entree_delta_col <= upper_bound)]
+                                else: results_df = results_df.iloc[0:0] # Should not happen if Nan check works
 
                             elif filter_key in ['nb_rea', 'nb_si']:
+                                 # This filter should only be active if search_value is not NaN (handled above)
                                  search_num = pd.to_numeric(search_value, errors='coerce')
-                                 # Match if search value is >= 0 and entree value is >= 0 (as per original logic)
-                                 if pd.notna(search_num) and search_num >= 0:
-                                     df_num = pd.to_numeric(results_df[filter_key], errors='coerce')
-                                     # Filter entree_df where the number is >= 0 (original logic seemed to just check existence)
-                                     # Let's refine: Match EXACTLY if search_num is provided? Or >= search_num? Assuming exact for now.
-                                     # results_df = results_df[df_num.notna() & (df_num >= 0)] # Old logic?
-                                     results_df = results_df[df_num == search_num] # Match exact value
+                                 if pd.notna(search_num): # Allow search for 0
+                                     entree_num_col = pd.to_numeric(results_df[filter_key], errors='coerce')
+                                     # Match exact value provided in the search record
+                                     results_df = results_df[entree_num_col == search_num]
                                  else:
-                                     results_df = results_df.iloc[0:0] # No match if search value invalid or negative
+                                     results_df = results_df.iloc[0:0] # No match if search value invalid
 
                             elif filter_key == 'age_gestationnel_weeks':
+                                # This filter should only be active if search_value is not NaN (handled above)
                                 search_num = pd.to_numeric(search_value, errors='coerce')
                                 if pd.notna(search_num):
-                                     results_df = results_df[pd.to_numeric(results_df['age_gestationnel_weeks'], errors='coerce') == search_num]
+                                     entree_weeks_col = pd.to_numeric(results_df['age_gestationnel_weeks'], errors='coerce')
+                                     results_df = results_df[entree_weeks_col == search_num]
                                 else: results_df = results_df.iloc[0:0]
 
                             else: # Generic comparison (assume string for flexibility)
-                                if not is_search_nan:
-                                    results_df = results_df[results_df[filter_key].astype(str).str.strip().fillna('') == str(search_value).strip()]
+                                # This filter should only be active if search_value is not NaN (handled above)
+                                search_str = str(search_value).strip()
+                                entree_str_col = results_df[filter_key].astype(str).str.strip().fillna('')
+                                results_df = results_df[entree_str_col == search_str]
 
                         except Exception as filter_ex:
                             st.error(f"Erreur lors de l'application du filtre '{ALLOWED_COLUMNS[filter_key]}': {filter_ex}")
@@ -582,16 +606,14 @@ if st.session_state.entree_data is not None and st.session_state.comparison_data
                             break # Stop filtering
 
                 # Exclude the selected row itself - NO LONGER NEEDED as comparing across files
-                # if selected_row_index_to_exclude is not None and selected_row_index_to_exclude in results_df.index:
-                #      results_df = results_df.drop(index=selected_row_index_to_exclude)
 
                 # Display Results
                 st.subheader("Résultats Trouvés dans le Fichier Entree")
                 if not results_df.empty:
                     st.info(f"{len(results_df)} enregistrement(s) correspondant(s) trouvé(s) dans '{entree_filename}' basé(s) sur : {', '.join(match_criteria_used)}")
                     # Display columns: ID + columns used in filter + maybe basic demographics?
-                    display_cols_keys = [UPLOADED_ID_COL] + [key for key, active in active_filters.items() if active]
-                    # Add sexe/annee_naiss if they exist in entree_df and weren't already added
+                    display_cols_keys = [UPLOADED_ID_COL] + [key for key, active in active_filters.items() if active and key in entree_df.columns] # Ensure used keys exist
+                    # Add sexe/annee_naiss if they exist in entree_df and weren't already added by filter selection
                     if 'sexe' in entree_df.columns and 'sexe' not in display_cols_keys: display_cols_keys.append('sexe')
                     if 'annee_naiss' in entree_df.columns and 'annee_naiss' not in display_cols_keys: display_cols_keys.append('annee_naiss')
                     # Ensure columns actually exist in the results_df before trying to display
@@ -600,57 +622,13 @@ if st.session_state.entree_data is not None and st.session_state.comparison_data
                 else:
                     st.warning(f"Aucune correspondance trouvée dans '{entree_filename}' pour les critères sélectionnés : {', '.join(match_criteria_used)}")
     else:
-         st.info("Définissez un enregistrement de recherche en utilisant l'une des méthodes ci-dessus (basées sur le fichier à comparer).")
+         st.info("Définissez un enregistrement de recherche en utilisant l'une des méthodes ci-dessus (basées sur le fichier à comparer) pour activer la recherche manuelle.")
 
 elif st.session_state.entree_data is None:
     st.warning("Veuillez téléverser le fichier 'Entree' de référence pour commencer.")
 elif st.session_state.comparison_data is None:
     st.warning("Veuillez téléverser un fichier à comparer contre le fichier 'Entree'.")
 
-# Error handling outside the main block (optional, as file loading has try-except)
-# try:
-#     # Main app logic could be wrapped if needed, but specific try-excepts are better
-#     pass
-# except Exception as e:
-#     st.error(f"Une erreur générale est survenue dans l'application : {e}")
-#     # Optionally reset state on major error
-#     # st.session_state.entree_data = None
-#     # st.session_state.comparison_data = None
-#     # st.session_state.search_record = None
-#     # st.session_state.selected_index_value = None
-
-# Error handling outside the main block (optional, as file loading has try-except)
-# try:
-#     # Main app logic could be wrapped if needed, but specific try-excepts are better
-#     pass
-# except Exception as e:
-#     st.error(f"Une erreur générale est survenue dans l'application : {e}")
-#     # Optionally reset state on major error
-#     # st.session_state.entree_data = None
-#     # st.session_state.comparison_data = None
-#     # st.session_state.search_record = None
-#     # st.session_state.selected_index_value = None
-
-# Error handling outside the main block (optional, as file loading has try-except)
-# try:
-#     # Main app logic could be wrapped if needed, but specific try-excepts are better
-#     pass
-# except Exception as e:
-#     st.error(f"Une erreur générale est survenue dans l'application : {e}")
-#     # Optionally reset state on major error
-#     # st.session_state.entree_data = None
-#     # st.session_state.comparison_data = None
-#     # st.session_state.search_record = None
-#     # st.session_state.selected_index_value = None
-
-# Error handling outside the main block (optional, as file loading has try-except)
-# try:
-#     # Main app logic could be wrapped if needed, but specific try-excepts are better
-#     pass
-# except Exception as e:
-#     st.error(f"Une erreur générale est survenue dans l'application : {e}")
-#     # Optionally reset state on major error
-#     # st.session_state.entree_data = None
-#     # st.session_state.comparison_data = None
-#     # st.session_state.search_record = None
-#     # st.session_state.selected_index_value = None 
+# --- Footer or final messages ---
+st.markdown("---")
+st.caption("Application de comparaison de fichiers CSV") 
