@@ -6,7 +6,7 @@ from datetime import datetime
 # --- Configuration ---
 # No longer assumes a fixed entree file
 ENCODING = 'utf-8'
-DATE_FORMAT = '%m/%d/%Y' # Adjust if needed, or set to None
+DATE_FORMAT = '%m/%d/%y' # Adjust if needed, or set to None
 # !!! IMPORTANT: Set the name of the ID column in the files users will upload !!!
 UPLOADED_ID_COL = 'id'
 
