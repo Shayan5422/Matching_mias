@@ -13,7 +13,7 @@ UPLOADED_ID_COL = 'id' # Assuming same ID column name for both files
 # Allowed columns for filtering and derived columns
 # Base columns expected for calculations: annee, age, ghm, entree_date, sortie_date, age_gestationnel, sexe, ... (and modes/dest/prov)
 ALLOWED_COLUMNS = {
-    "annee_naiss": "Année de Naissance (calculée)",
+    "decennie_naiss": "Decennie de Naissance (calculée)",
     "ghm_prefix": "GHM (3 premiers car.)",
     "sexe": "Sexe",
     "age_gestationnel_weeks": "Âge Gestationnel (semaines)",
@@ -27,14 +27,19 @@ ALLOWED_COLUMNS = {
 }
 
 # Columns to potentially display in the automatic match results
-AUTO_MATCH_DISPLAY_COLS = [UPLOADED_ID_COL, 'annee_naiss', 'sexe', 'ghm_prefix', 'delta_days']
+AUTO_MATCH_DISPLAY_COLS = [UPLOADED_ID_COL, 'decennie_naiss', 'sexe', 'ghm_prefix', 'delta_days']
 
 # --- Helper Functions ---
 
-def calculate_annee_naiss(annee_series, age_series):
+def calculate_decennie_naiss(annee_series, age_series):
+    # تبدیل به عدد
     annee = pd.to_numeric(annee_series, errors='coerce')
-    age = pd.to_numeric(age_series, errors='coerce')
-    return annee - age
+    age   = pd.to_numeric(age_series, errors='coerce')
+    # سال تولد
+    birth_year = annee - age
+    # محاسبه دهه (مثلاً 1983 → 1980)
+    return (birth_year // 10) * 10
+
 
 def calculate_delta_days(entree_dates, sortie_dates):
     entree_dt = pd.to_datetime(entree_dates, errors='coerce')
@@ -80,7 +85,7 @@ def preprocess_dataframe(df, file_name):
 
     # --- Calculate Derived Columns ---
     # Using .get() for safety in case base columns were missing despite the check above
-    processed_df['annee_naiss'] = calculate_annee_naiss(processed_df.get('annee'), processed_df.get('age'))
+    processed_df['decennie_naiss'] = calculate_decennie_naiss(processed_df.get('annee'), processed_df.get('age'))
     processed_df['ghm_prefix'] = processed_df.get('ghm', pd.Series(dtype=str)).astype(str).str[:3].replace('nan', None)
     processed_df['age_gestationnel_weeks'] = extract_gestational_weeks(processed_df.get('age_gestationnel', pd.Series(dtype=object)))
 
@@ -120,7 +125,7 @@ def preprocess_manual_record(record_dict):
     processed.update(manual_series)
     annee = pd.to_numeric(processed.get('annee'), errors='coerce')
     age = pd.to_numeric(processed.get('age'), errors='coerce')
-    processed['annee_naiss'] = annee - age if pd.notna(annee) and pd.notna(age) else pd.NA
+    processed['decennie_naiss'] = annee - age if pd.notna(annee) and pd.notna(age) else pd.NA
     processed['ghm_prefix'] = str(processed['ghm'])[:3] if pd.notna(processed['ghm']) else None
     age_gest_val = processed.get('age_gestationnel')
     processed['age_gestationnel_weeks'] = extract_gestational_weeks_scalar(age_gest_val) # Assuming scalar version exists
@@ -173,7 +178,7 @@ def find_confident_matches(_comparison_df, _entree_df, _comparison_filename, _en
     entree_numeric_cols = {}
     entree_string_cols = {}
     for col_key in match_cols:
-        if col_key in ['annee_naiss', 'age_gestationnel_weeks', 'nb_rea', 'nb_si', 'delta_days']:
+        if col_key in ['decennie_naiss', 'age_gestationnel_weeks', 'nb_rea', 'nb_si', 'delta_days']:
              entree_numeric_cols[col_key] = pd.to_numeric(_entree_df[col_key], errors='coerce')
         elif col_key == 'sexe':
              entree_string_cols[col_key] = _entree_df[col_key].astype(str).str.upper().fillna('') # Handle NaN before upper
@@ -206,7 +211,7 @@ def find_confident_matches(_comparison_df, _entree_df, _comparison_filename, _en
                     else:
                          current_filter &= pd.Series(False, index=_entree_df.index) # No match if comp_val invalid
 
-                elif col_key in ['annee_naiss', 'age_gestationnel_weeks', 'nb_rea', 'nb_si']:
+                elif col_key in ['decennie_naiss', 'age_gestationnel_weeks', 'nb_rea', 'nb_si']:
                      comp_num = pd.to_numeric(comp_val, errors='coerce')
                      if pd.notna(comp_num):
                           entree_vals = entree_numeric_cols[col_key]
@@ -492,14 +497,14 @@ if st.session_state.entree_data is not None and st.session_state.comparison_data
                  display_val = "(Vide/Manquant)" if is_search_val_missing else search_val
                  # Formatting for display
                  if col_key == 'delta_days' and not is_search_val_missing: display_val = f"{int(search_val)} jours (±2)"
-                 elif col_key == 'annee_naiss' and not is_search_val_missing: display_val = f"{int(search_val)}"
+                 elif col_key == 'decennie_naiss' and not is_search_val_missing: display_val = f"{int(search_val)}"
                  elif col_key == 'age_gestationnel_weeks' and not is_search_val_missing: display_val = f"{int(search_val)} semaines"
 
                  # Check if the corresponding column exists in the *entree_data* to enable the checkbox
                  is_col_in_entree = col_key in entree_df.columns
                  # Default checked only if value is present in search record AND column exists in entree file
                  # Exception: Sexe/Annee Naiss can be checked even if search_val is missing
-                 default_checked = is_col_in_entree and (not is_search_val_missing or col_key in ['sexe', 'annee_naiss'])
+                 default_checked = is_col_in_entree and (not is_search_val_missing or col_key in ['sexe', 'decennie_naiss'])
 
 
                  with cols[i % 3]:
@@ -531,7 +536,7 @@ if st.session_state.entree_data is not None and st.session_state.comparison_data
                         is_search_nan = pd.isna(search_value) or search_value is None
 
                         # Skip filter if search value is NaN, EXCEPT for specific fields where matching NaN is intended
-                        if is_search_nan and filter_key not in ['sexe', 'annee_naiss']:
+                        if is_search_nan and filter_key not in ['sexe', 'decennie_naiss']:
                             continue
 
                         # Ensure the column exists in the dataframe being filtered (entree_df)
@@ -553,8 +558,8 @@ if st.session_state.entree_data is not None and st.session_state.comparison_data
                                 else:
                                     search_str = str(search_value).upper()
                                     results_df = results_df[entree_sexe_col == search_str]
-                            elif filter_key == 'annee_naiss':
-                                entree_annee_col = pd.to_numeric(results_df['annee_naiss'], errors='coerce')
+                            elif filter_key == 'decennie_naiss':
+                                entree_annee_col = pd.to_numeric(results_df['decennie_naiss'], errors='coerce')
                                 if is_search_nan:
                                      results_df = results_df[entree_annee_col.isna()]
                                 else:
@@ -613,9 +618,9 @@ if st.session_state.entree_data is not None and st.session_state.comparison_data
                     st.info(f"{len(results_df)} enregistrement(s) correspondant(s) trouvé(s) dans '{entree_filename}' basé(s) sur : {', '.join(match_criteria_used)}")
                     # Display columns: ID + columns used in filter + maybe basic demographics?
                     display_cols_keys = [UPLOADED_ID_COL] + [key for key, active in active_filters.items() if active and key in entree_df.columns] # Ensure used keys exist
-                    # Add sexe/annee_naiss if they exist in entree_df and weren't already added by filter selection
+                    # Add sexe/decennie_naiss if they exist in entree_df and weren't already added by filter selection
                     if 'sexe' in entree_df.columns and 'sexe' not in display_cols_keys: display_cols_keys.append('sexe')
-                    if 'annee_naiss' in entree_df.columns and 'annee_naiss' not in display_cols_keys: display_cols_keys.append('annee_naiss')
+                    if 'decennie_naiss' in entree_df.columns and 'decennie_naiss' not in display_cols_keys: display_cols_keys.append('decennie_naiss')
                     # Ensure columns actually exist in the results_df before trying to display
                     final_display_cols = [col for col in dict.fromkeys(display_cols_keys) if col in results_df.columns]
                     st.dataframe(results_df[final_display_cols])
