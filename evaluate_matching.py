@@ -139,7 +139,18 @@ def find_confident_matches(_comparison_df, _entree_df, _comparison_filename, _en
                     else:
                          current_filter &= pd.Series(False, index=_entree_df.index)
 
-                elif col_key in ['annee_naiss', 'age_gestationnel_weeks', 'nb_rea', 'nb_si']:
+                elif col_key == 'annee_naiss':
+                     comp_num = pd.to_numeric(comp_val, errors='coerce')
+                     if pd.notna(comp_num):
+                          entree_vals = entree_numeric_cols[col_key]
+                          lower_bound = comp_num - 2
+                          upper_bound = comp_num + 2
+                          col_filter = entree_vals.notna() & (entree_vals >= lower_bound) & (entree_vals <= upper_bound)
+                          current_filter &= col_filter
+                     else:
+                          current_filter &= pd.Series(False, index=_entree_df.index)
+                          
+                elif col_key in ['age_gestationnel_weeks', 'nb_rea', 'nb_si']:
                      comp_num = pd.to_numeric(comp_val, errors='coerce')
                      if pd.notna(comp_num):
                           entree_vals = entree_numeric_cols[col_key]

@@ -89,7 +89,7 @@ def column_agreement_stats(
     """
     بر اساس جدول log (دارای ستون‌های sortie_id و entre_id) درصد برابری
     هر ستونِ ALLOWED_COLUMNS را حساب می‌کند.
-    ستون annee_naiss را با تلورانس ±۱ سال مقایسه می‌کند.
+    ستون annee_naiss را با تلورانس ±۲ سال و delta_days را با تلورانس ±۲ روز مقایسه می‌کند.
     خروجی: DataFrame با ستون‌های total_pairs، equal_pairs و percent_equal
     """
 
@@ -128,11 +128,18 @@ def column_agreement_stats(
             c_val = comp_ids.at[cid, col]
             e_val = ent_ids.at[eid, col]
 
-            # بررسی تطابق با تلورانس ±۱ برای annee_naiss
+            # بررسی تطابق با تلورانس برای ستون‌های خاص
             if pd.isna(c_val) and pd.isna(e_val):
                 equal = True
             elif col == "annee_naiss":
-                # تبدیل به عدد و مقایسه اختلاف ≤ 1
+                # تبدیل به عدد و مقایسه اختلاف ≤ 2
+                c_num = pd.to_numeric(c_val, errors="coerce")
+                e_num = pd.to_numeric(e_val, errors="coerce")
+                equal = (not pd.isna(c_num)
+                         and not pd.isna(e_num)
+                         and abs(c_num - e_num) <= 2)
+            elif col == "delta_days":
+                # تبدیل به عدد و مقایسه با تلورانس ۲ روز
                 c_num = pd.to_numeric(c_val, errors="coerce")
                 e_num = pd.to_numeric(e_val, errors="coerce")
                 equal = (not pd.isna(c_num)
