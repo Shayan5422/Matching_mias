@@ -24,14 +24,9 @@ AUTO_MATCH_DISPLAY_COLS = [UPLOADED_ID_COL, 'annee_naiss', 'sexe', 'ghm_prefix',
 # --- Helper Functions copied from app.py (Streamlit dependencies removed) ---
 
 def calculate_annee_naiss(annee_series, age_series):
-    # تبدیل به عدد
     annee = pd.to_numeric(annee_series, errors='coerce')
-    age   = pd.to_numeric(age_series, errors='coerce')
-    # سال تولد
-    birth_year = annee - age
-    # محاسبه دهه (مثلاً 1983 → 1980)
-    return (birth_year // 10) * 10
-
+    age = pd.to_numeric(age_series, errors='coerce')
+    return annee - age
 
 def calculate_delta_days(entree_dates, sortie_dates):
     entree_dt = pd.to_datetime(entree_dates, errors='coerce')

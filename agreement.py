@@ -3,6 +3,7 @@
 Script: compare_columns.py
 Goal  : برای هر ستون از ALLOWED_COLUMNS نشان می‌دهد چه درصدی از ردیف‌های
         تطابق‌یافته (بر اساس فایل لاگ) در دو فایل مقدار یکسان دارند.
+        در ستون annee_naiss اختلاف ±۱ (سال) را نیز به حساب می‌آورد.
 """
 
 import pandas as pd
@@ -13,7 +14,7 @@ DATE_FORMAT     = "%m/%d/%y"
 UPLOADED_ID_COL = "id"
 
 ALLOWED_COLUMNS = [
-    "decennie_naiss",
+    "annee_naiss",
     "ghm_prefix",
     "sexe",
     "age_gestationnel_weeks",
@@ -27,25 +28,8 @@ ALLOWED_COLUMNS = [
 ]
 
 # ------------------------------------------------------------ توابع کمکی قبلی
-import numpy as np
-import pandas as pd
-
-def calculate_annee_naiss(annee_series: pd.Series,
-                             age_series: pd.Series,
-                             *,
-                             floor_age: bool = True) -> pd.Series:
-    """
-    برمی‌گرداند دههٔ تولد = ⌊(سال − سن) / 10⌋ × 10
-    مثال: 1997 ← 1990
-    """
-    year_num = pd.to_numeric(annee_series, errors="coerce")
-    age_num  = pd.to_numeric(age_series,  errors="coerce")
-    if floor_age:
-        age_num = np.floor(age_num)
-
-    birth_year = year_num - age_num
-    return (birth_year // 10) * 10
-
+def calculate_annee_naiss(annee, age):
+    return pd.to_numeric(annee, errors="coerce") - pd.to_numeric(age, errors="coerce")
 
 def calculate_delta_days(entree, sortie):
     ent_dt = pd.to_datetime(entree, errors="coerce")
@@ -69,14 +53,14 @@ def preprocess(df: pd.DataFrame) -> pd.DataFrame:
     base_cols = [
         "annee","age","ghm","entree_date","sortie_date","age_gestationnel",
         "sexe","entree_mode","entree_provenance","sortie_mode",
-        "sortie_destination","nb_rea","nb_si",UPLOADED_ID_COL
+        "sortie_destination","nb_rea","nb_si", UPLOADED_ID_COL
     ]
     for c in base_cols:
         if c not in df.columns:
             df[c] = pd.NA
 
     # مشتق‌ها
-    df["decennie_naiss"]            = calculate_annee_naiss(df["annee"], df["age"])
+    df["annee_naiss"]            = calculate_annee_naiss(df["annee"], df["age"])
     df["ghm_prefix"]             = df["ghm"].astype(str).str[:3].replace("nan", None)
     df["age_gestationnel_weeks"] = extract_gestational_weeks(df["age_gestationnel"])
     df["entree_date"]            = pd.to_datetime(df["entree_date"], format=DATE_FORMAT,
@@ -105,6 +89,7 @@ def column_agreement_stats(
     """
     بر اساس جدول log (دارای ستون‌های sortie_id و entre_id) درصد برابری
     هر ستونِ ALLOWED_COLUMNS را حساب می‌کند.
+    ستون annee_naiss را با تلورانس ±۱ سال مقایسه می‌کند.
     خروجی: DataFrame با ستون‌های total_pairs، equal_pairs و percent_equal
     """
 
@@ -129,8 +114,8 @@ def column_agreement_stats(
     # ۳) محاسبه درصد تطابق در هر ستون
     stats = []
     for col in ALLOWED_COLUMNS:
-        equal_count  = 0
-        total_count  = 0
+        equal_count = 0
+        total_count = 0
 
         for _, row in log_df.iterrows():
             cid = str(row["comparison_id"])
@@ -143,10 +128,21 @@ def column_agreement_stats(
             c_val = comp_ids.at[cid, col]
             e_val = ent_ids.at[eid, col]
 
-            # شرط «هر دو NaN یا هردو مساوی»
-            if (pd.isna(c_val) and pd.isna(e_val)) or (c_val == e_val):
-                equal_count += 1
+            # بررسی تطابق با تلورانس ±۱ برای annee_naiss
+            if pd.isna(c_val) and pd.isna(e_val):
+                equal = True
+            elif col == "annee_naiss":
+                # تبدیل به عدد و مقایسه اختلاف ≤ 1
+                c_num = pd.to_numeric(c_val, errors="coerce")
+                e_num = pd.to_numeric(e_val, errors="coerce")
+                equal = (not pd.isna(c_num)
+                         and not pd.isna(e_num)
+                         and abs(c_num - e_num) <= 2)
+            else:
+                equal = (c_val == e_val)
 
+            if equal:
+                equal_count += 1
             total_count += 1
 
         percent = 0 if total_count == 0 else (equal_count / total_count) * 100
